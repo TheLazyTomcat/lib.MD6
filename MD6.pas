@@ -1,3 +1,54 @@
+{-------------------------------------------------------------------------------
+
+  This Source Code Form is subject to the terms of the Mozilla Public
+  License, v. 2.0. If a copy of the MPL was not distributed with this
+  file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+-------------------------------------------------------------------------------}
+{===============================================================================
+
+  MD6 calculation
+
+    Provides classes and functions for calculation of MD6 hash. All hash widths
+    are supported, as long as they are a multiple of 8 (only whole bytes,
+    arbitrary bitstreams are not supported). Also, all mandatory and optional
+    hash inputs can be varied (key, mode control, number of rounds).
+
+    In this version, the implementation is single-thread only, parallel code
+    might be added later in some limited form.
+
+  Version 1.0 (2022-11-03) - needs extensive testing and KAT tests
+
+  Last change 2022-11-03
+
+  ©2022 František Milt
+
+  Contacts:
+    František Milt: frantisek.milt@gmail.com
+
+  Support:
+    If you find this code useful, please consider supporting its author(s) by
+    making a small donation using the following link(s):
+
+      https://www.paypal.me/FMilt
+
+  Changelog:
+    For detailed changelog and history please refer to this git repository:
+
+      github.com/TheLazyTomcat/Lib.MD6
+
+  Dependencies:
+    AuxClasses         - github.com/TheLazyTomcat/Lib.AuxClasses  
+    AuxTypes           - github.com/TheLazyTomcat/Lib.AuxTypes
+    BitOps             - github.com/TheLazyTomcat/Lib.BitOps
+    HashBase           - github.com/TheLazyTomcat/Lib.HashBase
+  * SimpleCPUID        - github.com/TheLazyTomcat/Lib.SimpleCPUID
+    StaticMemoryStream - github.com/TheLazyTomcat/Lib.StaticMemoryStream
+    StrRect            - github.com/TheLazyTomcat/Lib.StrRect
+
+  SimpleCPUID might not be needed, see BitOps library for details.
+
+===============================================================================}
 unit MD6;
 
 {$IF defined(CPU64) or defined(CPU64BITS)}
@@ -10,6 +61,7 @@ unit MD6;
 
 {$IFDEF FPC}
   {$MODE ObjFPC}
+  {$MODESWITCH DuplicateLocals+}
   {$DEFINE FPC_DisableWarns}
   {$MACRO ON}
 {$ENDIF}
@@ -330,7 +382,7 @@ Function BinaryCorrectMD6(Hash: TMD6): TMD6;
   for this purpose.
 }
 type
-  TMD6State = type TObject;
+  TMD6State = type Pointer;
 
   TMD6Settings = record
     HashBits:     Integer;
@@ -386,6 +438,7 @@ uses
 {$IFDEF FPC_DisableWarns}
   {$DEFINE FPCDWM}
   {$DEFINE W4055:={$WARN 4055 OFF}} // Conversion between ordinals and pointers is not portable
+  {$DEFINE W5024:={$WARN 5024 OFF}} // Parameter "$1" not used
 {$ENDIF}
 
 {===============================================================================
@@ -1259,47 +1312,59 @@ end;
 
 //------------------------------------------------------------------------------
 
+{$IFDEF FPCDWM}{$PUSH}W5024{$ENDIF}
 procedure TMD6DefHash.SetHashBits(Value: Integer);
 begin
 raise EMD6OperationNotAllowed.Create('TMD6DefHash.SetHashBits: Changing hash bits not allowed.');
 end;
+{$IFDEF FPCDWM}{$POP}{$ENDIF}
 
 //------------------------------------------------------------------------------
 
+{$IFDEF FPCDWM}{$PUSH}W5024{$ENDIF}
 procedure TMD6DefHash.PutKey(Value: TMD6Key);
 begin
 raise EMD6OperationNotAllowed.Create('TMD6DefHash.PutKey: Key not allowed.');
 end;
+{$IFDEF FPCDWM}{$POP}{$ENDIF}
 
 //------------------------------------------------------------------------------
 
+{$IFDEF FPCDWM}{$PUSH}W5024{$ENDIF}
 procedure TMD6DefHash.SetRounds(Value: Integer);
 begin
 raise EMD6OperationNotAllowed.Create('TMD6DefHash.PuSetRoundstKey: Changing number of rounds not allowed.');
 end;
+{$IFDEF FPCDWM}{$POP}{$ENDIF}
 
 //------------------------------------------------------------------------------
 
+{$IFDEF FPCDWM}{$PUSH}W5024{$ENDIF}
 procedure TMD6DefHash.SetModeControl(Value: Integer);
 begin
 raise EMD6OperationNotAllowed.Create('TMD6DefHash.PuSetRoundstKey: Changing mode control not allowed.');
 end;
+{$IFDEF FPCDWM}{$POP}{$ENDIF}
 
 {-------------------------------------------------------------------------------
     TMD6DefHash - public methods
 -------------------------------------------------------------------------------}
 
+{$IFDEF FPCDWM}{$PUSH}W5024{$ENDIF}
 procedure TMD6DefHash.SetKey(const Key; Size: TMemSize);
 begin
 raise EMD6OperationNotAllowed.Create('TMD6DefHash.SetKey: Key not allowed.');
 end;
+{$IFDEF FPCDWM}{$POP}{$ENDIF}
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
+{$IFDEF FPCDWM}{$PUSH}W5024{$ENDIF}
 procedure TMD6DefHash.SetKey(const Key: String);
 begin
 raise EMD6OperationNotAllowed.Create('TMD6DefHash.SetKey: Key not allowed.');
 end;
+{$IFDEF FPCDWM}{$POP}{$ENDIF}
 
 
 {===============================================================================
@@ -1316,7 +1381,7 @@ end;
 
 Function TMD6_224Hash.GetMD6_224: TMD6_224;
 begin
-Move(fMD6[0],Result,SizeOf(Result))
+Move(fMD6[0],Addr(Result)^,SizeOf(Result))
 end;
 
 //------------------------------------------------------------------------------
@@ -1418,7 +1483,7 @@ end;
 
 Function TMD6_256Hash.GetMD6_256: TMD6_256;
 begin
-Move(fMD6[0],Result,SizeOf(Result))
+Move(fMD6[0],Addr(Result)^,SizeOf(Result))
 end;
 
 //------------------------------------------------------------------------------
@@ -1520,7 +1585,7 @@ end;
 
 Function TMD6_384Hash.GetMD6_384: TMD6_384;
 begin
-Move(fMD6[0],Result,SizeOf(Result))
+Move(fMD6[0],Addr(Result)^,SizeOf(Result))
 end;
 
 //------------------------------------------------------------------------------
@@ -1622,7 +1687,7 @@ end;
 
 Function TMD6_512Hash.GetMD6_512: TMD6_512;
 begin
-Move(fMD6[0],Result,SizeOf(Result))
+Move(fMD6[0],Addr(Result)^,SizeOf(Result))
 end;
 
 //------------------------------------------------------------------------------
@@ -1719,7 +1784,7 @@ end;
 Function MD6ToMD6_224(Hash: TMD6): TMD6_224;
 begin
 If Length(Hash) = SizeOf(Result) then
-  Move(Hash[0],Result,SizeOf(Result))
+  Move(Hash[0],Addr(Result)^,SizeOf(Result))
 else
   raise EMD6SizeMismatch.CreateFmt('MD6ToMD6_224: Incompatible hash size (%d).',[Length(Hash)]);
 end;
@@ -1729,7 +1794,7 @@ end;
 Function MD6ToMD6_256(Hash: TMD6): TMD6_256;
 begin
 If Length(Hash) = SizeOf(Result) then
-  Move(Hash[0],Result,SizeOf(Result))
+  Move(Hash[0],Addr(Result)^,SizeOf(Result))
 else
   raise EMD6SizeMismatch.CreateFmt('MD6ToMD6_256: Incompatible hash size (%d).',[Length(Hash)]);
 end;
@@ -1739,7 +1804,7 @@ end;
 Function MD6ToMD6_384(Hash: TMD6): TMD6_384;
 begin
 If Length(Hash) = SizeOf(Result) then
-  Move(Hash[0],Result,SizeOf(Result))
+  Move(Hash[0],Addr(Result)^,SizeOf(Result))
 else
   raise EMD6SizeMismatch.CreateFmt('MD6ToMD6_384: Incompatible hash size (%d).',[Length(Hash)]);
 end;
@@ -1749,7 +1814,7 @@ end;
 Function MD6ToMD6_512(Hash: TMD6): TMD6_512;
 begin
 If Length(Hash) = SizeOf(Result) then
-  Move(Hash[0],Result,SizeOf(Result))
+  Move(Hash[0],Addr(Result)^,SizeOf(Result))
 else
   raise EMD6SizeMismatch.CreateFmt('MD6ToMD6_512: Incompatible hash size (%d).',[Length(Hash)]);
 end;
@@ -1883,9 +1948,9 @@ var
   HashA:  TMD6Hash;
   HashB:  TMD6Hash;
 begin
-HashA := TMD6Hash.Create;
+HashA := TMD6Hash.CreateAndInitFrom(A);
 try
-  HashB := TMD6Hash.Create;
+  HashB := TMD6Hash.CreateAndInitFrom(B);
   try
     Result := HashA.Compare(HashB);
   finally
@@ -1903,9 +1968,9 @@ var
   HashA:  TMD6Hash;
   HashB:  TMD6Hash;
 begin
-HashA := TMD6Hash.Create;
+HashA := TMD6Hash.CreateAndInitFrom(A);
 try
-  HashB := TMD6Hash.Create;
+  HashB := TMD6Hash.CreateAndInitFrom(B);
   try
     Result := HashA.Same(HashB);
   finally
@@ -2141,7 +2206,7 @@ try
   Hash.Rounds := Settings.Rounds;
   Hash.ModeControl := Settings.ModeControl;
   Hash.Key := Settings.Key;
-  Hash.HashStream(Stream);
+  Hash.HashStream(Stream,Count);
   Result := Hash.MD6;
 finally
   Hash.Free;
