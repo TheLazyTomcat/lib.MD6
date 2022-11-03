@@ -27,12 +27,13 @@ uses
 type
   EMD6Exception = class(EHASHException);
 
-  EMD6InvalidValue      = class(EMD6Exception);
-  EMD6InvalidState      = class(EMD6Exception);
-  EMD6IncompatibleClass = class(EMD6Exception);
-  EMD6IncompatibleSize  = class(EMD6Exception);
-  EMD6ProcessingError   = class(EMD6Exception);
-  EMD6NotAllowed        = class(EMD6Exception);
+  EMD6InvalidValue        = class(EMD6Exception);
+  EMD6InvalidState        = class(EMD6Exception);
+  EMD6InvalidHashLength   = class(EMD6Exception);
+  EMD6IncompatibleClass   = class(EMD6Exception);
+  EMD6SizeMismatch        = class(EMD6Exception);
+  EMD6ProcessingError     = class(EMD6Exception);
+  EMD6OperationNotAllowed = class(EMD6Exception);
 
 {===============================================================================
     Common types and constants
@@ -100,13 +101,14 @@ type
     fRoundsDef:   Boolean;  // indicates if rounds were set explicitly (false) or implicitly (true)
     fModeControl: Integer;  // >= 0 (explicitly limited to 255)
     fState:       TMD6ProcessingState;
+    fProcessing:  Boolean;
     // getters setters
     Function GetMD6: TMD6; virtual;
     procedure SetMD6(Value: TMD6); virtual; // not used as a setter in any property
     procedure SetHashBits(Value: Integer); virtual;
     Function GetKey: TMD6Key; virtual;
     procedure PutKey(Value: TMD6Key); virtual;
-    procedure SetRoundsDef; virtual;
+    procedure SetRoundsDefault; virtual;
     procedure SetRounds(Value: Integer); virtual;
     procedure SetModeControl(Value: Integer); virtual;
     // main processing
@@ -283,7 +285,9 @@ type
   end;
 
 {===============================================================================
-    Standalone functions
+--------------------------------------------------------------------------------
+                              Standalone functions
+--------------------------------------------------------------------------------
 ===============================================================================}
 {
   Note that there is, for the sake of simplicity, no function implemented for
@@ -302,6 +306,11 @@ Function MD6_256ToMD6(Hash: TMD6_256): TMD6;
 Function MD6_384ToMD6(Hash: TMD6_384): TMD6;
 Function MD6_512ToMD6(Hash: TMD6_512): TMD6;
 
+Function IsCompatibleMD6_224(Hash: TMD6): Boolean;
+Function IsCompatibleMD6_256(Hash: TMD6): Boolean;
+Function IsCompatibleMD6_384(Hash: TMD6): Boolean;
+Function IsCompatibleMD6_512(Hash: TMD6): Boolean;
+
 //------------------------------------------------------------------------------
 
 Function MD6ToStr(MD6: TMD6): String;
@@ -312,10 +321,9 @@ Function StrToMD6Def(const Str: String; Default: TMD6): TMD6;
 Function CompareMD6(A,B: TMD6): Integer;
 Function SameMD6(A,B: TMD6): Boolean;
 
-Function BinaryCorrectMD6(Hash: TMD6): TMD6;{$IFDEF CanInline} inline; {$ENDIF}
+Function BinaryCorrectMD6(Hash: TMD6): TMD6;
 
 //------------------------------------------------------------------------------
-(*
 {
   For MD6, it is not enough to pass hash from previous step when doing
   continuous hashing (BufferMD6 > LastBufferMD6). TDM6State type is introduced
@@ -324,32 +332,51 @@ Function BinaryCorrectMD6(Hash: TMD6): TMD6;{$IFDEF CanInline} inline; {$ENDIF}
 type
   TMD6State = type TObject;
 
-Function InitialMD6(HashBits: Integer = MD6_BITS_DEFAULT): TMD6State;
+  TMD6Settings = record
+    HashBits:     Integer;
+    Rounds:       Integer;
+    ModeControl:  Integer;
+    Key:          TMD6Key;
+  end;
 
-procedure BufferMD6(var State: TMD6State; const Buffer; Size: TMemSize); overload;
-Function LastBufferMD6(State: TMD6State; const Buffer; Size: TMemSize): TMD6;
+Function MD6Settings(HashBits,Rounds,ModeControl: Integer; Key: TMD6Key): TMD6Settings; overload;
+Function MD6Settings(HashBits,Rounds,ModeControl: Integer; const Key; KeySize: TMemSize): TMD6Settings; overload;
+Function MD6Settings(HashBits,Rounds,ModeControl: Integer; const Key: String): TMD6Settings; overload;
+
+Function InitialMD6(Settings: TMD6Settings): TMD6State; overload;
+Function InitialMD6(HashBits: Integer = MD6_BITS_DEFAULT): TMD6State; overload;
+
+procedure BufferMD6(State: TMD6State; const Buffer; Size: TMemSize); overload;
+Function LastBufferMD6(var State: TMD6State; const Buffer; Size: TMemSize): TMD6;
 
 //------------------------------------------------------------------------------
 
+Function BufferMD6(const Buffer; Size: TMemSize; Settings: TMD6Settings): TMD6; overload;
 Function BufferMD6(const Buffer; Size: TMemSize; HashBits: Integer = MD6_BITS_DEFAULT): TMD6; overload;
 
-Function AnsiStringMD6(const Str: AnsiString; HashBits: Integer = MD6_BITS_DEFAULT): TMD6;
-Function WideStringMD6(const Str: WideString; HashBits: Integer = MD6_BITS_DEFAULT): TMD6;
-Function StringMD6(const Str: String; HashBits: Integer = MD6_BITS_DEFAULT): TMD6;
+Function AnsiStringMD6(const Str: AnsiString; Settings: TMD6Settings): TMD6; overload;
+Function AnsiStringMD6(const Str: AnsiString; HashBits: Integer = MD6_BITS_DEFAULT): TMD6; overload;
+Function WideStringMD6(const Str: WideString; Settings: TMD6Settings): TMD6; overload;
+Function WideStringMD6(const Str: WideString; HashBits: Integer = MD6_BITS_DEFAULT): TMD6; overload;
+Function StringMD6(const Str: String; Settings: TMD6Settings): TMD6; overload;
+Function StringMD6(const Str: String; HashBits: Integer = MD6_BITS_DEFAULT): TMD6; overload;
 
-Function StreamMD6(Stream: TStream; Count: Int64 = -1; HashBits: Integer = MD6_BITS_DEFAULT): TMD6;
-Function FileMD6(const FileName: String; HashBits: Integer = MD6_BITS_DEFAULT): TMD6;
+Function StreamMD6(Stream: TStream; Count: Int64; Settings: TMD6Settings): TMD6; overload;
+Function StreamMD6(Stream: TStream; Count: Int64 = -1; HashBits: Integer = MD6_BITS_DEFAULT): TMD6; overload;
+Function FileMD6(const FileName: String; Settings: TMD6Settings): TMD6; overload;
+Function FileMD6(const FileName: String; HashBits: Integer = MD6_BITS_DEFAULT): TMD6; overload;
 
 //------------------------------------------------------------------------------
 type
   TMD6Context = type Pointer;
 
-Function MD6_Init(HashBits: Integer = MD6_BITS_DEFAULT): TMD6Context;
+Function MD6_Init(Settings: TMD6Settings): TMD6Context; overload;
+Function MD6_Init(HashBits: Integer = MD6_BITS_DEFAULT): TMD6Context; overload;
 procedure MD6_Update(Context: TMD6Context; const Buffer; Size: TMemSize);
 Function MD6_Final(var Context: TMD6Context; const Buffer; Size: TMemSize): TMD6; overload;
 Function MD6_Final(var Context: TMD6Context): TMD6; overload;
 Function MD6_Hash(const Buffer; Size: TMemSize; HashBits: Integer = MD6_BITS_DEFAULT): TMD6;
-*)
+
 implementation
 
 uses
@@ -553,35 +580,35 @@ end;
 
 procedure TMD6Hash.SetMD6(Value: TMD6);
 begin
-If not IsHashing then
+If not fProcessing then
   begin
     If (Length(Value) > 0) and (Length(Value) <= (MD6_BITS_MAX div 8)) then
       begin
         fMD6 := Copy(Value);
         fHashBits := Length(Value) * 8;
-        SetRoundsDef;
+        SetRoundsDefault;
       end
-    else raise EMD6InvalidValue.CreateFmt('TMD6Hash.SetMD6: Invalid hash length (%d).',[Length(Value)]);
+    else raise EMD6InvalidHashLength.CreateFmt('TMD6Hash.SetMD6: Invalid hash length (%d).',[Length(Value)])
   end
-else raise EMD6InvalidState.Create('TMD6Hash.SetMD6: Cannot change hash when hashing.');
+else raise EMD6InvalidState.Create('TMD6Hash.SetMD6: Cannot change hash during processing.');
 end;
 
 //------------------------------------------------------------------------------
 
 procedure TMD6Hash.SetHashBits(Value: Integer);
 begin
-If not IsHashing then
+If not fProcessing then
   begin
     If (Value > 0) and (Value <= MD6_BITS_MAX) and ((Value and 7) = 0) then
       begin
         SetLength(fMD6,0);  // to prevent copying
         SetLength(fMD6,Value div 8);
         fHashBits := Value;
-        SetRoundsDef;
+        SetRoundsDefault;
       end
     else raise EMD6InvalidValue.CreateFmt('TMD6Hash.SetHashBits: Invalid hash bits value (%d).',[Value]);
   end
-else raise EMD6InvalidState.Create('TMD6Hash.SetHashBits: Cannot change hash bits when hashing.');
+else raise EMD6InvalidState.Create('TMD6Hash.SetHashBits: Cannot change hash bits during processing.');
 end;
 
 //------------------------------------------------------------------------------
@@ -595,21 +622,21 @@ end;
 
 procedure TMD6Hash.PutKey(Value: TMD6Key);
 begin
-If not IsHashing then
+If not fProcessing then
   begin
     If Length(Value) <= MD6_KEY_MAXLEN then
       begin
         fKey := Copy(Value);
-        SetRoundsDef;
+        SetRoundsDefault;
       end
     else raise EMD6InvalidValue.CreateFmt('TMD6Hash.PetKey: Invalid key length (%d).',[Length(Value)]);
   end
-else raise EMD6InvalidState.Create('TMD6Hash.PutKey: Cannot change key when hashing.');
+else raise EMD6InvalidState.Create('TMD6Hash.PutKey: Cannot change key during processing.');
 end;
 
 //------------------------------------------------------------------------------
 
-procedure TMD6Hash.SetRoundsDef;
+procedure TMD6Hash.SetRoundsDefault;
 begin
 // just a macro function
 If fRoundsDef then
@@ -625,30 +652,34 @@ end;
 
 procedure TMD6Hash.SetRounds(Value: Integer);
 begin
-If not IsHashing then
+If not fProcessing then
   begin
     If Value >= 0 then
       begin
         fRounds := Value;
         fRoundsDef := False;
       end
-    else raise EMD6InvalidValue.CreateFmt('TMD6Hash.SetRounds: Invalid rounds number (%d).',[Value]);
+    else raise EMD6InvalidValue.CreateFmt('TMD6Hash.SetRounds: Invalid number of rounds (%d).',[Value]);
   end
-else raise EMD6InvalidState.Create('TMD6Hash.SetRounds: Cannot change rounds when hashing.');
+else raise EMD6InvalidState.Create('TMD6Hash.SetRounds: Cannot change number of rounds during processing.');
 end;
 
 //------------------------------------------------------------------------------
 
 procedure TMD6Hash.SetModeControl(Value: Integer);
 begin
-If not IsHashing then
+If not fProcessing then
   begin
+  {
+    Mode control must be limited to 255 because it has to fit into 8 bit
+    storage in control word.
+  }
     If (Value >= 0) and (Value <= 255) then
       fModeControl := Value
     else
       raise EMD6InvalidValue.CreateFmt('TMD6Hash.SetModeControl: Invalid mode control (%d).',[Value]);
   end
-else raise EMD6InvalidState.Create('TMD6Hash.SetModeControl: Cannot change mode control when hashing.');
+else raise EMD6InvalidState.Create('TMD6Hash.SetModeControl: Cannot change mode control during processing.');
 end;
 
 //------------------------------------------------------------------------------
@@ -926,7 +957,9 @@ end;
 
 procedure TMD6Hash.ProcessFirst(const Block);
 begin
+fProcessing := True;
 inherited;
+AddTreeLevel;
 ProcessTreeNode(0,Block);
 end;
 
@@ -936,6 +969,8 @@ procedure TMD6Hash.ProcessLast;
 var
   PadBytes: TMemSize;
 begin
+If fFirstBlock then
+  AddTreeLevel;
 If fTransCount > 0 then
   begin
     PadBytes := MD6_CHUNK_SIZE - fTransCount;
@@ -946,6 +981,7 @@ If fTransCount > 0 then
   end
 else PadBytes := 0;
 ProcessTreeNodeFinal(0,PadBytes);
+fProcessing := False;
 end;
 
 //------------------------------------------------------------------------------
@@ -961,6 +997,7 @@ fRounds := 168; // 40 + (512 / 4)
 fRoundsDef := True;
 fModeControl := MD6_MODE_DEFAULT;
 SetLength(fState.Levels,0);
+fProcessing := False;
 end;
 
 {-------------------------------------------------------------------------------
@@ -1041,6 +1078,7 @@ If Hash is TMD6Hash then
     SetLength(fState.Levels,Length(fState.Levels));
     For i := Low(fState.Levels) to High(fState.Levels) do
       SetLength(fState.Levels[i].Block,Length(fState.Levels[i].Block));
+    fProcessing := TMD6Hash(Hash).fProcessing;
   end
 else raise EMD6IncompatibleClass.CreateFmt('TMD6Hash.CreateAndInitFrom: Incompatible class (%s).',[Hash.ClassName]);
 end;
@@ -1059,7 +1097,6 @@ procedure TMD6Hash.Init;
 begin
 inherited;
 SetLength(fState.Levels,0);
-AddTreeLevel;
 end;
 
 //------------------------------------------------------------------------------
@@ -1087,7 +1124,7 @@ If Hash is Self.ClassType then
               Break;
             end;
       end
-    else raise EMD6IncompatibleSize.CreateFmt('TMD6Hash.Compare: Size mismatch (%d,%d).',[Length(fMD6),Length(Temp)]);
+    else raise EMD6SizeMismatch.CreateFmt('TMD6Hash.Compare: Cannot compare hashes of differing lengths (%d,%d).',[Length(fMD6),Length(Temp)]);
   end
 else raise EMD6IncompatibleClass.CreateFmt('TMD6Hash.Compare: Incompatible class (%s).',[Hash.ClassName]);
 end;
@@ -1123,7 +1160,7 @@ If (Length(Str) >= 2) and (Length(Str) <= (MD6_BITS_MAX div 4)) then
       Temp[i] := UInt8(StrToInt('$' + Copy(Str,(i * 2) + 1,2)));
     SetMD6(Temp);
   end
-else raise EMD6IncompatibleSize.CreateFmt('TMD6Hash.FromString: Invalid hash string length (%d).',[Length(Str) div 2]);
+else raise EMD6InvalidValue.CreateFmt('TMD6Hash.FromString: Invalid string length (%d).',[Length(Str)]);
 end;
 
 //------------------------------------------------------------------------------
@@ -1217,35 +1254,35 @@ begin
 If Length(Value) = Length(fMD6) then
   inherited SetMD6(fMD6)
 else
-  raise EMD6IncompatibleSize.CreateFmt('TMD6DefHash.SetMD6: Size mismatch (%d,%d).',[Length(fMD6),Length(Value)]);
+  raise EMD6SizeMismatch.CreateFmt('TMD6DefHash.SetMD6: Size mismatch (%d,%d).',[Length(fMD6),Length(Value)]);
 end;
 
 //------------------------------------------------------------------------------
 
 procedure TMD6DefHash.SetHashBits(Value: Integer);
 begin
-raise EMD6NotAllowed.Create('TMD6DefHash.SetHashBits: Changing hash bits is not allowed.');
+raise EMD6OperationNotAllowed.Create('TMD6DefHash.SetHashBits: Changing hash bits not allowed.');
 end;
 
 //------------------------------------------------------------------------------
 
 procedure TMD6DefHash.PutKey(Value: TMD6Key);
 begin
-raise EMD6NotAllowed.Create('TMD6DefHash.PutKey: Key is not allowed.');
+raise EMD6OperationNotAllowed.Create('TMD6DefHash.PutKey: Key not allowed.');
 end;
 
 //------------------------------------------------------------------------------
 
 procedure TMD6DefHash.SetRounds(Value: Integer);
 begin
-raise EMD6NotAllowed.Create('TMD6DefHash.PuSetRoundstKey: Changing number of rounds is not allowed.');
+raise EMD6OperationNotAllowed.Create('TMD6DefHash.PuSetRoundstKey: Changing number of rounds not allowed.');
 end;
 
 //------------------------------------------------------------------------------
 
 procedure TMD6DefHash.SetModeControl(Value: Integer);
 begin
-raise EMD6NotAllowed.Create('TMD6DefHash.PuSetRoundstKey: Changing mode control is not allowed.');
+raise EMD6OperationNotAllowed.Create('TMD6DefHash.PuSetRoundstKey: Changing mode control not allowed.');
 end;
 
 {-------------------------------------------------------------------------------
@@ -1254,14 +1291,14 @@ end;
 
 procedure TMD6DefHash.SetKey(const Key; Size: TMemSize);
 begin
-raise EMD6NotAllowed.Create('TMD6DefHash.SetKey: Key is not allowed.');
+raise EMD6OperationNotAllowed.Create('TMD6DefHash.SetKey: Key not allowed.');
 end;
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 procedure TMD6DefHash.SetKey(const Key: String);
 begin
-raise EMD6NotAllowed.Create('TMD6DefHash.SetKey: Key is not allowed.');
+raise EMD6OperationNotAllowed.Create('TMD6DefHash.SetKey: Key not allowed.');
 end;
 
 
@@ -1346,7 +1383,7 @@ begin
 If Length(Hash) = SizeOf(TMD6_224) then
   inherited CreateAndInitFrom(Hash)
 else
-  raise EMD6IncompatibleSize.CreateFmt('TMD6_224Hash.CreateAndInitFrom: Incompatible hash size (%d).',[Length(Hash)]);
+  raise EMD6SizeMismatch.CreateFmt('TMD6_224Hash.CreateAndInitFrom: Incompatible hash size (%d).',[Length(Hash)]);
 end;
 
 //------------------------------------------------------------------------------
@@ -1448,7 +1485,7 @@ begin
 If Length(Hash) = SizeOf(TMD6_256) then
   inherited CreateAndInitFrom(Hash)
 else
-  raise EMD6IncompatibleSize.CreateFmt('TMD6_256Hash.CreateAndInitFrom: Incompatible hash size (%d).',[Length(Hash)]);
+  raise EMD6SizeMismatch.CreateFmt('TMD6_256Hash.CreateAndInitFrom: Incompatible hash size (%d).',[Length(Hash)]);
 end;
 
 //------------------------------------------------------------------------------
@@ -1550,7 +1587,7 @@ begin
 If Length(Hash) = SizeOf(TMD6_384) then
   inherited CreateAndInitFrom(Hash)
 else
-  raise EMD6IncompatibleSize.CreateFmt('TMD6_384Hash.CreateAndInitFrom: Incompatible hash size (%d).',[Length(Hash)]);
+  raise EMD6SizeMismatch.CreateFmt('TMD6_384Hash.CreateAndInitFrom: Incompatible hash size (%d).',[Length(Hash)]);
 end;
 
 //------------------------------------------------------------------------------
@@ -1652,7 +1689,7 @@ begin
 If Length(Hash) = SizeOf(TMD6_512) then
   inherited CreateAndInitFrom(Hash)
 else
-  raise EMD6IncompatibleSize.CreateFmt('TMD6_512Hash.CreateAndInitFrom: Incompatible hash size (%d).',[Length(Hash)]);
+  raise EMD6SizeMismatch.CreateFmt('TMD6_512Hash.CreateAndInitFrom: Incompatible hash size (%d).',[Length(Hash)]);
 end;
 
 //------------------------------------------------------------------------------
@@ -1674,7 +1711,9 @@ end;
 
 
 {===============================================================================
-    Standalone functions
+--------------------------------------------------------------------------------
+                              Standalone functions
+--------------------------------------------------------------------------------
 ===============================================================================}
 
 Function MD6ToMD6_224(Hash: TMD6): TMD6_224;
@@ -1682,7 +1721,7 @@ begin
 If Length(Hash) = SizeOf(Result) then
   Move(Hash[0],Result,SizeOf(Result))
 else
-  raise EMD6IncompatibleSize.CreateFmt('MD6ToMD6_224: Incompatible hash size (%d).',[Length(Hash)]);
+  raise EMD6SizeMismatch.CreateFmt('MD6ToMD6_224: Incompatible hash size (%d).',[Length(Hash)]);
 end;
 
 //------------------------------------------------------------------------------
@@ -1692,7 +1731,7 @@ begin
 If Length(Hash) = SizeOf(Result) then
   Move(Hash[0],Result,SizeOf(Result))
 else
-  raise EMD6IncompatibleSize.CreateFmt('MD6ToMD6_256: Incompatible hash size (%d).',[Length(Hash)]);
+  raise EMD6SizeMismatch.CreateFmt('MD6ToMD6_256: Incompatible hash size (%d).',[Length(Hash)]);
 end;
 
 //------------------------------------------------------------------------------
@@ -1702,7 +1741,7 @@ begin
 If Length(Hash) = SizeOf(Result) then
   Move(Hash[0],Result,SizeOf(Result))
 else
-  raise EMD6IncompatibleSize.CreateFmt('MD6ToMD6_384: Incompatible hash size (%d).',[Length(Hash)]);
+  raise EMD6SizeMismatch.CreateFmt('MD6ToMD6_384: Incompatible hash size (%d).',[Length(Hash)]);
 end;
 
 //------------------------------------------------------------------------------
@@ -1712,7 +1751,7 @@ begin
 If Length(Hash) = SizeOf(Result) then
   Move(Hash[0],Result,SizeOf(Result))
 else
-  raise EMD6IncompatibleSize.CreateFmt('MD6ToMD6_512: Incompatible hash size (%d).',[Length(Hash)]);
+  raise EMD6SizeMismatch.CreateFmt('MD6ToMD6_512: Incompatible hash size (%d).',[Length(Hash)]);
 end;
 
 //------------------------------------------------------------------------------
@@ -1747,50 +1786,472 @@ SetLength(Result,SizeOf(Hash));
 Move(Hash,Result[0],SizeOf(Hash));
 end;
 
+//------------------------------------------------------------------------------
+
+Function IsCompatibleMD6_224(Hash: TMD6): Boolean;
+begin
+Result := Length(Hash) = SizeOf(TMD6_224);
+end;
+
+//------------------------------------------------------------------------------
+
+Function IsCompatibleMD6_256(Hash: TMD6): Boolean;
+begin
+Result := Length(Hash) = SizeOf(TMD6_256);
+end;
+
+//------------------------------------------------------------------------------
+
+Function IsCompatibleMD6_384(Hash: TMD6): Boolean;
+begin
+Result := Length(Hash) = SizeOf(TMD6_384);
+end;
+
+//------------------------------------------------------------------------------
+
+Function IsCompatibleMD6_512(Hash: TMD6): Boolean;
+begin
+Result := Length(Hash) = SizeOf(TMD6_512);
+end;
+
 //==============================================================================
 
 Function MD6ToStr(MD6: TMD6): String;
+var
+  Hash: TMD6Hash;
 begin
-with TMD6Hash.CreateAndInitFrom(MD6) do
+Hash := TMD6Hash.CreateAndInitFrom(MD6);
 try
-  Result := AsString;
+  Result := Hash.AsString;
 finally
-  Free;
+  Hash.Free;
 end;
 end;
 
 //------------------------------------------------------------------------------
 
 Function StrToMD6(Str: String): TMD6;
+var
+  Hash: TMD6Hash;
 begin
-with TMD6Hash.CreateAndInitFromString(Str) do
+Hash := TMD6Hash.CreateAndInitFromString(Str);
 try  
-  Result := MD6;  // a copy is made internally
+  Result := Hash.MD6; // a copy is made internally
 finally
-  Free;
+  Hash.Free;
 end;
 end;
 
 //------------------------------------------------------------------------------
 
 Function TryStrToMD6(const Str: String; out MD6: TMD6): Boolean;
+var
+  Hash: TMD6Hash;
 begin
-
+Hash := TMD6Hash.Create;
+try
+  If Hash.TryFromString(Str) then
+    begin
+      MD6 := Hash.MD6;
+      Result := True;
+    end
+  else Result := False;
+finally
+  Hash.Free;
 end;
+end;
+
+//------------------------------------------------------------------------------
 
 Function StrToMD6Def(const Str: String; Default: TMD6): TMD6;
+var
+  Hash: TMD6Hash;
 begin
+Hash := TMD6Hash.Create;
+try
+  Hash.FromStringDef(Str,Default);
+  Result := Hash.MD6;
+finally
+  Hash.Free;
 end;
+end;
+
+//------------------------------------------------------------------------------
+
 Function CompareMD6(A,B: TMD6): Integer;
+var
+  HashA:  TMD6Hash;
+  HashB:  TMD6Hash;
 begin
+HashA := TMD6Hash.Create;
+try
+  HashB := TMD6Hash.Create;
+  try
+    Result := HashA.Compare(HashB);
+  finally
+    HashB.Free;
+  end;
+finally
+  HashA.Free;
 end;
+end;
+
+//------------------------------------------------------------------------------
+
 Function SameMD6(A,B: TMD6): Boolean;
+var
+  HashA:  TMD6Hash;
+  HashB:  TMD6Hash;
 begin
+HashA := TMD6Hash.Create;
+try
+  HashB := TMD6Hash.Create;
+  try
+    Result := HashA.Same(HashB);
+  finally
+    HashB.Free;
+  end;
+finally
+  HashA.Free;
 end;
+end;
+
+//------------------------------------------------------------------------------
 
 Function BinaryCorrectMD6(Hash: TMD6): TMD6;
 begin
 Result := Copy(Hash);
+end;
+
+//==============================================================================
+
+// internal function
+Function MD6SettingsDef(HashBits: Integer): TMD6Settings;
+begin
+Result.HashBits := HashBits;
+Result.Rounds := 40 + (HashBits div 4);
+Result.ModeControl := MD6_MODE_DEFAULT;
+Result.Key := nil;
+end;
+
+//------------------------------------------------------------------------------
+
+Function MD6Settings(HashBits,Rounds,ModeControl: Integer; Key: TMD6Key): TMD6Settings;
+begin
+Result.HashBits := HashBits;
+Result.Rounds := Rounds;
+Result.ModeControl := ModeControl;
+Result.Key := Copy(Key);
+end;
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+Function MD6Settings(HashBits,Rounds,ModeControl: Integer; const Key; KeySize: TMemSize): TMD6Settings;
+begin
+Result.HashBits := HashBits;
+Result.Rounds := Rounds;
+Result.ModeControl := ModeControl; 
+If KeySize <= MD6_KEY_MAXLEN then
+  SetLength(Result.Key,KeySize)
+else
+  SetLength(Result.Key,MD6_KEY_MAXLEN);
+If KeySize > 0 then
+  Move(Key,Addr(Result.Key[0])^,KeySize);
+end;
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+Function MD6Settings(HashBits,Rounds,ModeControl: Integer; const Key: String): TMD6Settings;
+var
+  TempStr:  UTF8String;
+begin
+Result.HashBits := HashBits;
+Result.Rounds := Rounds;
+Result.ModeControl := ModeControl;
+TempStr := StrToUTF8(Key);
+If Length(TempStr) > 0 then
+  begin
+    If Length(TempStr) * SizeOf(UTF8Char) <= MD6_KEY_MAXLEN then
+      SetLength(Result.Key,Length(TempStr) * SizeOf(UTF8Char))
+    else
+      SetLength(Result.Key,MD6_KEY_MAXLEN);
+    Move(PUTF8Char(TempStr)^,Result.Key[0],Length(Result.Key));
+  end;
+end;
+
+//------------------------------------------------------------------------------
+
+Function InitialMD6(Settings: TMD6Settings): TMD6State;
+var
+  Hash: TMD6Hash;
+begin
+Hash := TMD6Hash.Create;
+Hash.HashBits := Settings.HashBits;
+Hash.Rounds := Settings.Rounds;
+Hash.ModeControl := Settings.ModeControl;
+Hash.Key := Settings.Key; // no need to copy, setter does the copying
+Hash.Init;
+Result := TMD6State(Hash);
+end;
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+Function InitialMD6(HashBits: Integer = MD6_BITS_DEFAULT): TMD6State;
+begin
+Result := InitialMD6(MD6SettingsDef(HashBits));
+end;
+
+//------------------------------------------------------------------------------
+
+procedure BufferMD6(State: TMD6State; const Buffer; Size: TMemSize);
+begin
+If Assigned(State) then
+  TMD6Hash(State).Update(Buffer,Size)
+else
+  raise EMD6InvalidState.Create('BufferMD6: MD6 state not initialized.');
+end;
+
+//------------------------------------------------------------------------------
+
+Function LastBufferMD6(var State: TMD6State; const Buffer; Size: TMemSize): TMD6;
+begin
+If Assigned(State) then
+  begin
+    TMD6Hash(State).Final(Buffer,Size);
+    Result := TMD6Hash(State).MD6;
+    TMD6Hash(State).Free;
+    State := nil;
+  end
+else raise EMD6InvalidState.Create('LastBufferMD6: MD6 state not initialized.');
+end;
+
+//==============================================================================
+
+Function BufferMD6(const Buffer; Size: TMemSize; Settings: TMD6Settings): TMD6;
+var
+  Hash: TMD6Hash;
+begin
+Hash := TMD6Hash.Create;
+try
+  Hash.HashBits := Settings.HashBits;
+  Hash.Rounds := Settings.Rounds;
+  Hash.ModeControl := Settings.ModeControl;
+  Hash.Key := Settings.Key;
+  Hash.HashBuffer(Buffer,Size);
+  Result := Hash.MD6;
+finally
+  Hash.Free;
+end;
+end;
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+Function BufferMD6(const Buffer; Size: TMemSize; HashBits: Integer = MD6_BITS_DEFAULT): TMD6;
+begin
+Result := BufferMD6(Buffer,Size,MD6SettingsDef(HashBits));
+end;
+
+//------------------------------------------------------------------------------
+
+Function AnsiStringMD6(const Str: AnsiString; Settings: TMD6Settings): TMD6;
+var
+  Hash: TMD6Hash;
+begin
+Hash := TMD6Hash.Create;
+try
+  Hash.HashBits := Settings.HashBits;
+  Hash.Rounds := Settings.Rounds;
+  Hash.ModeControl := Settings.ModeControl;
+  Hash.Key := Settings.Key;
+  Hash.HashAnsiString(Str);
+  Result := Hash.MD6;
+finally
+  Hash.Free;
+end;
+end;
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+Function AnsiStringMD6(const Str: AnsiString; HashBits: Integer = MD6_BITS_DEFAULT): TMD6;
+begin
+Result := AnsiStringMD6(Str,MD6SettingsDef(HashBits));
+end;
+
+//------------------------------------------------------------------------------
+
+Function WideStringMD6(const Str: WideString; Settings: TMD6Settings): TMD6;
+var
+  Hash: TMD6Hash;
+begin
+Hash := TMD6Hash.Create;
+try
+  Hash.HashBits := Settings.HashBits;
+  Hash.Rounds := Settings.Rounds;
+  Hash.ModeControl := Settings.ModeControl;
+  Hash.Key := Settings.Key;
+  Hash.HashWideString(Str);
+  Result := Hash.MD6;
+finally
+  Hash.Free;
+end;
+end;
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+Function WideStringMD6(const Str: WideString; HashBits: Integer = MD6_BITS_DEFAULT): TMD6;
+begin
+Result := WideStringMD6(Str,MD6SettingsDef(HashBits));
+end;
+
+//------------------------------------------------------------------------------
+
+Function StringMD6(const Str: String; Settings: TMD6Settings): TMD6;
+var
+  Hash: TMD6Hash;
+begin
+Hash := TMD6Hash.Create;
+try
+  Hash.HashBits := Settings.HashBits;
+  Hash.Rounds := Settings.Rounds;
+  Hash.ModeControl := Settings.ModeControl;
+  Hash.Key := Settings.Key;
+  Hash.HashString(Str);
+  Result := Hash.MD6;
+finally
+  Hash.Free;
+end;
+end;
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+Function StringMD6(const Str: String; HashBits: Integer = MD6_BITS_DEFAULT): TMD6;
+begin
+Result := StringMD6(Str,MD6SettingsDef(HashBits));
+end;
+
+//------------------------------------------------------------------------------
+
+Function StreamMD6(Stream: TStream; Count: Int64; Settings: TMD6Settings): TMD6;
+var
+  Hash: TMD6Hash;
+begin
+Hash := TMD6Hash.Create;
+try
+  Hash.HashBits := Settings.HashBits;
+  Hash.Rounds := Settings.Rounds;
+  Hash.ModeControl := Settings.ModeControl;
+  Hash.Key := Settings.Key;
+  Hash.HashStream(Stream);
+  Result := Hash.MD6;
+finally
+  Hash.Free;
+end;
+end;
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+Function StreamMD6(Stream: TStream; Count: Int64 = -1; HashBits: Integer = MD6_BITS_DEFAULT): TMD6;
+begin
+Result := StreamMD6(Stream,Count,MD6SettingsDef(HashBits));
+end;
+
+//------------------------------------------------------------------------------
+
+Function FileMD6(const FileName: String; Settings: TMD6Settings): TMD6;
+var
+  Hash: TMD6Hash;
+begin
+Hash := TMD6Hash.Create;
+try
+  Hash.HashBits := Settings.HashBits;
+  Hash.Rounds := Settings.Rounds;
+  Hash.ModeControl := Settings.ModeControl;
+  Hash.Key := Settings.Key;
+  Hash.HashFile(FileName);
+  Result := Hash.MD6;
+finally
+  Hash.Free;
+end;
+end;
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+Function FileMD6(const FileName: String; HashBits: Integer = MD6_BITS_DEFAULT): TMD6;
+begin
+Result := FileMD6(FileName,MD6SettingsDef(HashBits));
+end;
+
+//==============================================================================
+
+Function MD6_Init(Settings: TMD6Settings): TMD6Context;
+var
+  Hash: TMD6Hash;
+begin
+Hash := TMD6Hash.Create;
+Hash.HashBits := Settings.HashBits;
+Hash.Rounds := Settings.Rounds;
+Hash.ModeControl := Settings.ModeControl;
+Hash.Key := Settings.Key; 
+Hash.Init;
+Result := TMD6Context(Pointer(Hash));
+end;
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+Function MD6_Init(HashBits: Integer = MD6_BITS_DEFAULT): TMD6Context;
+begin
+Result := MD6_Init(MD6SettingsDef(HashBits));
+end;
+
+//------------------------------------------------------------------------------
+
+procedure MD6_Update(Context: TMD6Context; const Buffer; Size: TMemSize);
+begin
+If Assigned(Context) then
+  TMD6Hash(Context).Update(Buffer,Size)
+else
+  raise EMD6InvalidState.Create('MD6_Update: MD6 context not initialized.');
+end;
+
+//------------------------------------------------------------------------------
+
+Function MD6_Final(var Context: TMD6Context; const Buffer; Size: TMemSize): TMD6;
+begin
+If Assigned(Context) then
+  begin
+    TMD6Hash(Context).Update(Buffer,Size);
+    Result := MD6_Final(Context);
+  end
+else raise EMD6InvalidState.Create('MD6_Final: MD6 context not initialized.');
+end;
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+Function MD6_Final(var Context: TMD6Context): TMD6;
+begin
+If Assigned(Context) then
+  begin
+    TMD6Hash(Context).Final;
+    Result := TMD6Hash(Context).MD6;
+    Context := nil;
+  end
+else raise EMD6InvalidState.Create('MD6_Final: MD6 context not initialized.');
+end;
+
+//------------------------------------------------------------------------------
+
+Function MD6_Hash(const Buffer; Size: TMemSize; HashBits: Integer = MD6_BITS_DEFAULT): TMD6;
+var
+  Hash: TMD6Hash;
+begin
+Hash := TMD6Hash.Create;
+try
+  Hash.HashBits := HashBits;
+  Hash.HashBuffer(Buffer,Size);
+  Result := Hash.MD6;
+finally
+  Hash.Free;
+end;
 end;
 
 end.
