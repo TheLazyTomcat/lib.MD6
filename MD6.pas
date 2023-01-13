@@ -476,6 +476,7 @@ type
     fProgUpdInterval:       UInt32;
     fDoneEvent:             TEvent;
     fProcessing:            Boolean;
+    fLastProgress:          Double;
     // events and callbacks
     fOnThreadStartCallback: TMD6ThreadStartCallback;
     fOnThreadStartEvent:    TMD6ThreadStartEvent;
@@ -2449,7 +2450,7 @@ TaskCount := 0;
 CommonLevelCount := 0;
 PrepareTasksSettings;
 // make sure there is "way" more tasks than threads if possible (load balancing and all that)
-If (TaskCount <= (fProcessingSettings.ThreadCount * 2)) and
+If (TaskCount < (fProcessingSettings.ThreadCount * 2)) and
    (fProcessingSettings.ThreadLevelCount > 1) then
   begin
     Dec(fProcessingSettings.ThreadLevelCount);
@@ -2535,6 +2536,7 @@ var
 begin
 ParallelPrepare;
 Result := fProcessingSettings.ThreadCount;
+fLastProgress := -1.0;
 ProgressHandler(Self,0.0);
 fDoneEvent := TEvent.Create(True,False);
 try
@@ -2598,6 +2600,7 @@ fHashSettings.MaxThreads := ProcessorCount;
 fHashSettings.MaxSeqNodes := 1024;
 fProgUpdInterval := 250;
 fProcessing := False;
+fLastProgress := 0.0;
 fOnThreadStartCallback := nil;
 fOnThreadStartEvent := nil;
 fOnProgressCallback := nil;
@@ -2619,11 +2622,16 @@ end;
 //------------------------------------------------------------------------------
 
 procedure TMD6HashParallel.DoProgress;
+var
+  Progress: Double;
 begin
 If fInputMessage.Size > 0 then
-  ProgressHandler(Self,InterlockedLoad(fProgressTracking.CurrentIntProgress) / fInputMessage.Size)
-else
-  ProgressHandler(Self,0.0);
+  begin
+    Progress := InterlockedLoad(fProgressTracking.CurrentIntProgress) / fInputMessage.Size;
+    If not SameValue(Progress,fLastProgress,0.001) then
+      ProgressHandler(Self,Progress);
+  end
+else ProgressHandler(Self,0.0);
 end;
 
 {-------------------------------------------------------------------------------
