@@ -30,8 +30,9 @@
       the start of processing, so only hashing of memory buffer or file is
       provided.
 
-        WARNING - the parallel code is not fully tested, use it at your own
-                  risk.
+        WARNING - The parallel code is not fully tested, use it at your own
+                  risk. Also, performance gain and scaling is uncertain, as
+                  I was not able to test the code on more than dual-core CPU.
 
   Version 1.1 (2023-01-13)
 
@@ -469,11 +470,17 @@ type
     fCommonTree: record
   {C} State:                TMD6CommonProcessingState;
     end;
+    fProgressTracking: record
+  {I} CurrentIntProgress:   UInt64;
+    end;
+    fProgUpdInterval:       UInt32;
     fDoneEvent:             TEvent;
     fProcessing:            Boolean;
     // events and callbacks
     fOnThreadStartCallback: TMD6ThreadStartCallback;
     fOnThreadStartEvent:    TMD6ThreadStartEvent;
+    fOnProgressCallback:    TFloatCallback;
+    fOnProgressEvent:       TFloatEvent;
     // getters setters
     Function GetMD6: TMD6; virtual;
     procedure SetHashBits(Value: Integer); virtual;
@@ -500,6 +507,9 @@ type
     procedure DoThreadStart; virtual;
     // object init/final
     procedure Initialize; virtual;
+    // others
+    procedure ProgressHandler(Sender: TObject; Progress: Double); virtual;
+    procedure DoProgress; virtual;
   public
     class Function ProcessorCount: Integer; virtual;
     constructor Create;
@@ -515,9 +525,13 @@ type
     property ModeControl: Integer read fHashSettings.ModeControl write SetModeControl;
     property MaxThreads: Integer read fHashSettings.MaxThreads write SetMaxThreads;
     property MaxSequentialNodes: Int64 read fHashSettings.MaxSeqNodes write SetMaxSeqNodes;
+    property ProgressUpdateInterval: UInt32 read fProgUpdInterval write fProgUpdInterval;
     property OnThreadStartCallback: TMD6ThreadStartCallback read fOnThreadStartCallback write fOnThreadStartCallback;
     property OnThreadStartEvent: TMD6ThreadStartEvent read fOnThreadStartEvent write fOnThreadStartEvent;
     property OnThreadStart: TMD6ThreadStartEvent read fOnThreadStartEvent write fOnThreadStartEvent;
+    property OnProgressCallback: TFloatCallback read fOnProgressCallback write fOnProgressCallback;
+    property OnProgressEvent: TFloatEvent read fOnProgressEvent write fOnProgressEvent;
+    property OnProgress: TFloatEvent read fOnProgressEvent write fOnProgressEvent;
   end;
 
 {===============================================================================
@@ -616,7 +630,7 @@ Function MD6_Hash(const Buffer; Size: TMemSize; HashBits: Integer = MD6_BITS_DEF
 implementation
 
 uses
-  Windows, Math,
+  {$IFDEF Windows}Windows,{$ELSE}BaseUnix,{$ENDIF} Math,
   StrRect, BitOps, InterlockedOps, StaticMemoryStream;
 
 {$IFDEF FPC_DisableWarns}
@@ -628,7 +642,18 @@ uses
     General utilities
 ===============================================================================}
 
+{$IFDEF Windows}
+
 procedure GetNativeSystemInfo(lpSystemInfo: PSystemInfo); stdcall; external kernel32;
+
+{$ELSE}
+
+const
+  _SC_NPROCESSORS_ONLN = 84;
+
+Function sysconf(name: cInt): cLong; cdecl; external;
+
+{$ENDIF}
 
 //------------------------------------------------------------------------------
 
@@ -2319,6 +2344,7 @@ try
                 end;
               // pass data for processing
               Thread_ProcessThreadNode(ThreadTask,0,Buffer);
+              InterlockedAdd(fProgressTracking.CurrentIntProgress,BytesRead);
             end;
           Inc(i);
         until (i >= fTasksSettings.ChunksPerTask) or (BytesRead < SizeOf(Buffer));
@@ -2422,8 +2448,8 @@ fProcessingSettings.ThreadLevelCount := Max(1,TreeLevelCount - Ceil(LogN(4,fProc
 TaskCount := 0;
 CommonLevelCount := 0;
 PrepareTasksSettings;
-// make sure there is more tasks than threads if possible (load balancing and all that)
-If (TaskCount <= fProcessingSettings.ThreadCount) and
+// make sure there is "way" more tasks than threads if possible (load balancing and all that)
+If (TaskCount <= (fProcessingSettings.ThreadCount * 2)) and
    (fProcessingSettings.ThreadLevelCount > 1) then
   begin
     Dec(fProcessingSettings.ThreadLevelCount);
@@ -2474,6 +2500,7 @@ For i := Low(fCommonTree.State.Levels) to High(fCommonTree.State.Levels) do
             Nodes[j].ParentNodePutIndex := 0;
           end
       end;
+fProgressTracking.CurrentIntProgress := 0;
 ReadWriteBarrier;
 end;
 
@@ -2508,16 +2535,26 @@ var
 begin
 ParallelPrepare;
 Result := fProcessingSettings.ThreadCount;
+ProgressHandler(Self,0.0);
 fDoneEvent := TEvent.Create(True,False);
 try
   // run threads and wait for them to finish
   For i := 1 to fProcessingSettings.ThreadCount do
     DoThreadStart;
-  fDoneEvent.Wait;
+  If Assigned(fOnProgressEvent) or Assigned(fOnProgressCallback) then
+    begin
+      while True do
+        If fDoneEvent.Wait(250) = wrTimeout then
+          DoProgress
+        else
+          Break{while};
+    end
+  else fDoneEvent.Wait;
 finally
   FreeAndNil(fDoneEvent);
 end;
 ReadWriteBarrier;
+ProgressHandler(Self,1.0);
 {
   All threads should be done by this point.
 
@@ -2559,9 +2596,34 @@ fHashSettings.RoundsDef := True;
 fHashSettings.ModeControl := MD6_MODE_DEFAULT;
 fHashSettings.MaxThreads := ProcessorCount;
 fHashSettings.MaxSeqNodes := 1024;
+fProgUpdInterval := 250;
 fProcessing := False;
 fOnThreadStartCallback := nil;
 fOnThreadStartEvent := nil;
+fOnProgressCallback := nil;
+fOnProgressEvent := nil;
+end;
+
+//------------------------------------------------------------------------------
+
+{$IFDEF FPCDWM}{$PUSH}W5024{$ENDIF}
+procedure TMD6HashParallel.ProgressHandler(Sender: TObject; Progress: Double);
+begin
+If Assigned(fOnProgressEvent) then
+  fOnProgressEvent(Self,Progress)
+else If Assigned(fOnProgressCallback) then
+  fOnProgressCallback(Self,Progress)
+end;
+{$IFDEF FPCDWM}{$POP}{$ENDIF}
+
+//------------------------------------------------------------------------------
+
+procedure TMD6HashParallel.DoProgress;
+begin
+If fInputMessage.Size > 0 then
+  ProgressHandler(Self,InterlockedLoad(fProgressTracking.CurrentIntProgress) / fInputMessage.Size)
+else
+  ProgressHandler(Self,0.0);
 end;
 
 {-------------------------------------------------------------------------------
@@ -2635,6 +2697,7 @@ try
         Hash.Key := fHashSettings.Key;
         Hash.Rounds := fHashSettings.Rounds;
         Hash.ModeControl := fHashSettings.ModeControl;
+        Hash.OnProgressEvent := ProgressHandler;
         Hash.HashMemory(Memory,Size);
         fMD6 := Hash.MD6;
         Result := 1;
@@ -2674,6 +2737,7 @@ try
           Hash.Key := fHashSettings.Key;
           Hash.Rounds := fHashSettings.Rounds;
           Hash.ModeControl := fHashSettings.ModeControl;
+          Hash.OnProgressEvent := ProgressHandler;
           Hash.HashFile(FileName);
           fMD6 := Hash.MD6;
           Result := 1;
