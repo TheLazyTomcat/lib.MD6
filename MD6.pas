@@ -14,9 +14,28 @@
     bitstreams are not supported). Also, all mandatory and optional hash inputs
     can be varied (key, mode control, number of rounds).
 
-  Version 1.1 (2022-11-03)
+      Default implementation provided here (class TMD6Hash and its descendants)
+      is only single-threaded, but as the MD6 can be heavily parallelized, an
+      attemp was made to provide MD6 hashing that can use multiple execution
+      paths.
 
-  Last change 2022-11-03
+      This is done in the form of TMD6HashParallel class (note that this class
+      is NOT a descendant of THashBase, but rather a standalone class).
+      The used code is purely experimental and probably bugged, but it offers a
+      full freedom in hash input values (there is a limiting factor that
+      protects against excessive memory use for combination of long messages
+      and low mode control - property MaxSequentialNodes - but it can be
+      changed as needed).
+      The only strict limit is, that the entire message must be available at
+      the start of processing, so only hashing of memory buffer or file is
+      provided.
+
+        WARNING - the parallel code is not fully tested, use it at your own
+                  risk.
+
+  Version 1.1 (2023-01-13)
+
+  Last change 2023-01-13
 
   ©2022-2023 František Milt
 
@@ -35,15 +54,31 @@
       github.com/TheLazyTomcat/Lib.MD6
 
   Dependencies:
-    AuxClasses         - github.com/TheLazyTomcat/Lib.AuxClasses  
+    AuxClasses         - github.com/TheLazyTomcat/Lib.AuxClasses
     AuxTypes           - github.com/TheLazyTomcat/Lib.AuxTypes
     BitOps             - github.com/TheLazyTomcat/Lib.BitOps
+  * BitVector          - github.com/TheLazyTomcat/Lib.BitVector
     HashBase           - github.com/TheLazyTomcat/Lib.HashBase
+    InterlockedOps     - github.com/TheLazyTomcat/Lib.InterlockedOps
+  * LinSyncObjs        - github.com/TheLazyTomcat/Lib.LinSyncObjs
+    NamedSharedItems   - github.com/TheLazyTomcat/Lib.NamedSharedItems
+    SHA1               - github.com/TheLazyTomcat/Lib.SHA1
   * SimpleCPUID        - github.com/TheLazyTomcat/Lib.SimpleCPUID
+  * SimpleFutex        - github.com/TheLazyTomcat/Lib.SimpleFutex
+    SharedMemoryStream - github.com/TheLazyTomcat/Lib.SharedMemoryStream
     StaticMemoryStream - github.com/TheLazyTomcat/Lib.StaticMemoryStream
     StrRect            - github.com/TheLazyTomcat/Lib.StrRect
+  * UInt64Utils        - github.com/TheLazyTomcat/Lib.UInt64Utils
+  * WinSyncObjs        - github.com/TheLazyTomcat/Lib.WinSyncObjs
 
-  SimpleCPUID might not be needed, see BitOps library for details.
+  Libraries UInt64Utils and WinSyncObjs are required only when compiling for
+  Windows OS.
+
+  Libraries BitVector, LinSyncObjs and SimpleFutex are required only when
+  compiling for Linux OS.
+
+  Library SimpleCPUID might not be required, depending on defined symbols in
+  InterlockedOps and BitOps libraries.
 
 ===============================================================================}
 unit MD6;
@@ -401,7 +436,7 @@ type
           thread-protected
       I - accessed using only interlocked functions
       C - combined access
-}
+  }
     fHashSettings: record
   {R} HashBits:             Integer;
   {R} Key:                  TMD6Key;
@@ -459,7 +494,7 @@ type
     // preparation and execution of parallel processing
     Function ParallelPossible(DataSize: UInt64): Boolean; virtual;
     procedure ParallelPrepare; virtual;
-    Function ParallelExecute(Buffer: Pointer; Size: TMemSize): Integer; overload; virtual;
+    Function ParallelExecute(Memory: Pointer; Size: TMemSize): Integer; overload; virtual;
     Function ParallelExecute(const FileName: String; Size: Int64): Integer; overload; virtual;
     Function ParallelExecute: Integer; overload; virtual;
     procedure DoThreadStart; virtual;
@@ -470,6 +505,7 @@ type
     constructor Create;
     procedure SetKey(const Key; Size: TMemSize); overload; virtual;
     procedure SetKey(const Key: String); overload; virtual;
+    Function HashMemory(Memory: Pointer; Size: TMemSize): Integer; virtual;
     Function HashBuffer(const Buffer; Size: TMemSize): Integer; virtual;
     Function HashFile(const FileName: String): Integer; virtual;
     property MD6: TMD6 read GetMD6;
@@ -585,7 +621,6 @@ uses
 
 {$IFDEF FPC_DisableWarns}
   {$DEFINE FPCDWM}
-  //{$DEFINE W4055:={$WARN 4055 OFF}} // Conversion between ordinals and pointers is not portable
   {$DEFINE W5024:={$WARN 5024 OFF}} // Parameter "$1" not used
 {$ENDIF}
 
@@ -1442,7 +1477,7 @@ If Size <= MD6_KEY_MAXLEN then
 else
   SetLength(TempKey,MD6_KEY_MAXLEN);
 If Size > 0 then
-  Move(Key,Addr(TempKey[0])^,Size);
+  Move(Key,Addr(TempKey[0])^,Length(TempKey));
 Self.Key := TempKey; // calls full setter
 end;
 
@@ -2146,7 +2181,7 @@ If not InterlockedLoad(fProcessingVariables.Terminated) then
         ThreadTask.State.Levels[i].Bytes := 0;
         InitializeBlock(ThreadTask.State.Levels[i].Block,fHashSettings.Rounds,fHashSettings.Key);
       end;
-    Result := ThreadTask.CurrentOffset <= fInputMessage.Size;
+    Result := ThreadTask.CurrentOffset < fInputMessage.Size;
   end
 else raise EMD6ParallelInternal.Create('TMD6HashParallel.Thread_GetTask: Processing terminated.');
 end;
@@ -2265,13 +2300,15 @@ try
   else
     WorkStream := TStaticMemoryStream.Create(fInputMessage.Buffer,fInputMessage.Size);
   try
+    ThreadTask.CurrentOffset := 0;
+    SetLength(ThreadTask.State.Levels,0);
     while Thread_GetTask(ThreadTask) do
       begin
         WorkStream.Seek(ThreadTask.CurrentOffset,soBeginning);
         i := 0;
         PadBytes := 0;
         repeat
-          BytesRead := WorkStream.Read(Buffer,SizeOf(Buffer));
+          BytesRead := WorkStream.Read(Addr(Buffer)^,SizeOf(Buffer));
           If BytesRead > 0 then
             begin
               // do padding if needed
@@ -2377,7 +2414,13 @@ If TreeLevelCount > fHashSettings.ModeControl then
     TreeLevelCount := fHashSettings.ModeControl + 1;  // top-most node is sequential
   end
 else fProcessingSettings.Sequential := False;
-fProcessingSettings.ThreadLevelCount := TreeLevelCount - Ceil(LogN(4,fProcessingSettings.ThreadCount));
+fProcessingSettings.ThreadLevelCount := Max(1,TreeLevelCount - Ceil(LogN(4,fProcessingSettings.ThreadCount)));
+{
+  following two assignments are here for FPC, so it stops throwing nonsensical
+  warnings (nonsensical because both values are set in PrepareTasksSettings)
+}
+TaskCount := 0;
+CommonLevelCount := 0;
 PrepareTasksSettings;
 // make sure there is more tasks than threads if possible (load balancing and all that)
 If (TaskCount <= fProcessingSettings.ThreadCount) and
@@ -2436,13 +2479,13 @@ end;
 
 //------------------------------------------------------------------------------
 
-Function TMD6HashParallel.ParallelExecute(Buffer: Pointer; Size: TMemSize): Integer;
+Function TMD6HashParallel.ParallelExecute(Memory: Pointer; Size: TMemSize): Integer;
 begin
 fInputMessage.ProcessingMode := tmBuffer;
-fInputMessage.Buffer := Buffer;
+fInputMessage.Buffer := Memory;
 fInputMessage.FileName := '';
 fInputMessage.Size := UInt64(Size);
-Result := ParallelExecute;
+Result := Self.ParallelExecute;
 end;
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -2454,7 +2497,7 @@ fInputMessage.Buffer := nil;
 fInputMessage.FileName := FileName;
 UniqueString(fInputMessage.FileName);
 fInputMessage.Size := UInt64(Size);
-Result := ParallelExecute;
+Result := Self.ParallelExecute;
 end;
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -2562,7 +2605,7 @@ If Size <= MD6_KEY_MAXLEN then
 else
   SetLength(TempKey,MD6_KEY_MAXLEN);
 If Size > 0 then
-  Move(Key,Addr(TempKey[0])^,Size);
+  Move(Key,Addr(TempKey[0])^,Length(TempKey));
 Self.Key := TempKey;
 end;
 
@@ -2578,7 +2621,7 @@ end;
 
 //------------------------------------------------------------------------------
 
-Function TMD6HashParallel.HashBuffer(const Buffer; Size: TMemSize): Integer;
+Function TMD6HashParallel.HashMemory(Memory: Pointer; Size: TMemSize): Integer;
 var
   Hash: TMD6Hash;
 begin
@@ -2592,17 +2635,24 @@ try
         Hash.Key := fHashSettings.Key;
         Hash.Rounds := fHashSettings.Rounds;
         Hash.ModeControl := fHashSettings.ModeControl;
-        Hash.HashBuffer(Buffer,Size);
+        Hash.HashMemory(Memory,Size);
         fMD6 := Hash.MD6;
         Result := 1;
       finally
         Hash.Free;
       end;
     end
-  else Result := ParallelExecute(@Buffer,Size);
+  else Result := ParallelExecute(Memory,Size);
 finally
   fProcessing := False;
 end;
+end;
+
+//------------------------------------------------------------------------------
+
+Function TMD6HashParallel.HashBuffer(const Buffer; Size: TMemSize): Integer;
+begin
+Result := HashMemory(@Buffer,Size);
 end;
 
 //------------------------------------------------------------------------------
