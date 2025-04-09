@@ -30,9 +30,9 @@
              Linux build was tested only in virtual machine, so performance and
              stability there is also unknown.
 
-  Version 2.0 (2025-04-07)
+  Version 2.0.1 (2025-04-09)
 
-  Last change 2025-04-07
+  Last change 2025-04-09
 
   ©2022-2025 František Milt
 
@@ -57,12 +57,17 @@
     BitOps         - github.com/TheLazyTomcat/Lib.BitOps
     HashBase       - github.com/TheLazyTomcat/Lib.HashBase
     InterlockedOps - github.com/TheLazyTomcat/Lib.InterlockedOps
+  * SimpleCPUID    - github.com/TheLazyTomcat/Lib.SimpleCPUID
     StrRect        - github.com/TheLazyTomcat/Lib.StrRect
+
+  Library SimpleCPUID is required only when compiling for x86 architecture (ie.
+  32bit) and PurePascal symbol is not defined.
+
+  Library SimpleCPUID might also be required as an indirect dependency.
 
   Indirect dependencies:
     AuxExceptions      - github.com/TheLazyTomcat/Lib.AuxExceptions
     BasicUIM           - github.com/TheLazyTomcat/Lib.BasicUIM
-    SimpleCPUID        - github.com/TheLazyTomcat/Lib.SimpleCPUID
     StaticMemoryStream - github.com/TheLazyTomcat/Lib.StaticMemoryStream
     UInt64Utils        - github.com/TheLazyTomcat/Lib.UInt64Utils
     WinFileInfo        - github.com/TheLazyTomcat/Lib.WinFileInfo
@@ -83,12 +88,12 @@ unit MD6;
 
 //------------------------------------------------------------------------------
 
-{$IF defined(CPU64) or defined(CPU64BITS)}
-  {$DEFINE CPU64bit}
-{$ELSEIF defined(CPU16)}
-  {$MESSAGE FATAL 'Unsupported CPU.'}
+{$IF Defined(CPUX86_64) or Defined(CPUX64)}
+  {$DEFINE x64}
+{$ELSEIF Defined(CPU386)}
+  {$DEFINE x86}
 {$ELSE}
-  {$DEFINE CPU32bit}
+  {$DEFINE PurePascal}
 {$IFEND}
 
 {$IF Defined(WINDOWS) or Defined(MSWINDOWS)}
@@ -110,6 +115,14 @@ unit MD6;
   {$MACRO ON}
 {$ENDIF}
 {$H+}
+
+//------------------------------------------------------------------------------
+// do not touch following
+{$IF not Defined(PurePascal) and Defined(x86)}
+  {$DEFINE VectorCompression}
+{$ELSE}
+  {$UNDEF VectorCompression}
+{$IFEND}
 
 interface
 
@@ -705,7 +718,8 @@ implementation
 
 uses
   {$IFDEF Windows}Windows,{$ELSE}UnixType, BaseUnix,{$ENDIF} SyncObjs,
-  AuxMath, StrRect, BitOps, InterlockedOps;
+  {$IFDEF VectorCompression}SimpleCPUID,{$ENDIF}AuxMath, StrRect, BitOps,
+  InterlockedOps;
 
 {$IFNDEF Windows}
   {$LINKLIB C}
@@ -747,6 +761,7 @@ Function sem_wait(sem: psem_t): cint; cdecl; external;
 Function sem_post(sem: psem_t): cint; cdecl; external;
 
 {$ENDIF}
+
 
 {===============================================================================
 --------------------------------------------------------------------------------
@@ -1069,6 +1084,100 @@ CalculateBlockChunks(BlockArray,BlockChunks);
 end;
 
 //------------------------------------------------------------------------------
+{$IFDEF VectorCompression}
+var
+  VAR_SSE3Supported: Boolean = False;
+
+procedure CompressionRoundSSE({EAX}RoundConst, {EDX}FirstWord: PInt64); register; assembler;
+const
+  Shifts: array[0..31] of Int64 = (
+    10, 5, 13, 10, 11, 12, 2, 7, 14, 15, 7, 13, 11, 7, 6, 12, // right shifts
+    11, 24, 9, 16, 15, 9, 27, 15, 6, 2, 29, 8, 15, 5, 31, 9); // left shifts
+asm
+{
+  Compression is implemented in SSE only for 32bit code simply because it is
+  not needed elsewhere.
+
+  As the MD6 hash is based around 64bit words, 32bit processors cannot handle
+  them directly and most things must be emulated in code - and that is slow.
+  Therefore I have decided to implement processing in SSE, which can handle
+  64bit integers, and as a bonus can process more than one at a time.
+  I cannot say anything conclusive, but for me the SSE was more than 3x faster
+  than best result produced from pascal code by any compiler.
+
+  Code produced by the compiler (namely FPC) for 64bit CPUs seems to be well
+  optimized and provides even better performance than this SSE implementation.
+
+  AVX[2/512/10] could probably speed this even more thanks to 256 or 512bit
+  registers, but my prehistoric computer does not offer those extensions, so
+  I cannot develop for them.
+}
+    {$IFDEF FPC}
+      MOVDDUP   XMM4, [EAX]
+    {$ELSE}
+      DB $F2, $0F, $12, $20
+    {$ENDIF}
+
+      LEA       EAX, [Shifts]
+      MOV       ECX, 8
+
+  @CycleStart:
+
+      MOVDQA    XMM5, XMM4
+
+      MOVDQU    XMM0, [EDX - 144]   // [i - 18]
+      MOVDQU    XMM1, [EDX - 168]   // [i - 21]
+
+      MOVDQU    XMM2, [EDX - 248]   // [i - 31]
+      MOVDQU    XMM3, [EDX - 536]   // [i - 67]
+
+      PAND      XMM0, XMM1
+      PXOR      XMM5, XMM0
+
+      MOVDQU    XMM0, [EDX - 712]   // [i - 89]
+      MOVDQU    XMM1, [EDX - 136]   // [i - 17]
+
+      PAND      XMM2, XMM3
+      PXOR      XMM5, XMM2
+
+      PXOR      XMM5, XMM0
+      PXOR      XMM5, XMM1
+
+      // right shift
+      MOVQ      XMM0, [EAX]
+      MOVQ      XMM1, [EAX + 8]
+      MOVQ      XMM2, XMM5
+      MOVHLPS   XMM3, XMM5
+      PSRLQ     XMM2, XMM0
+      PSRLQ     XMM3, XMM1
+      MOVLHPS   XMM2, XMM3
+      PXOR      XMM5, XMM2
+
+      // left shift
+      MOVQ      XMM0, [EAX + 128]
+      MOVQ      XMM1, [EAX + 136]
+      MOVQ      XMM2, XMM5
+      MOVHLPS   XMM3, XMM5
+      PSLLQ     XMM2, XMM0
+      PSLLQ     XMM3, XMM1
+      MOVLHPS   XMM2, XMM3
+      PXOR      XMM5, XMM2
+    {
+      Is there any way of shifting each items in the vector register by
+      different amount?
+    }
+
+      MOVDQU    [EDX], XMM5
+
+      ADD       EDX, 16
+      ADD       EAX, 16
+
+      DEC       ECX
+      JNZ       @CycleStart
+end;
+
+//--  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
+{$ENDIF}  
 
 procedure TMD6ProcessorBase.CompressBlockArray(var BlockArray: TMD6BlockArray);
 var
@@ -1087,118 +1196,124 @@ i := MD6_BLOCKARRAY_MINLEN;
 while i <= (Length(BlockArray) - MD6_CHUNK_LEN) do
   begin
     // unrolled round (16 steps)...
-    
-    // step 0
-    x := RoundConst xor BlockArray[i - 89{MD6_BLOCK_LEN - step}] xor BlockArray[i - 17{MD6_TAP[0] - step}];
-    x := x xor (BlockArray[i - 18{MD6_TAP[1] - step}] and BlockArray[i - 21{MD6_TAP[2] - step}]);
-    x := x xor (BlockArray[i - 31{MD6_TAP[3] - step}] and BlockArray[i - 67{MD6_TAP[4] - step}]);
-    x := x xor (x shr 10{MD6_SHIFT_R[step]});
-    BlockArray[i] := x xor (x shl 11{MD6_SHIFT_L[step]});
+  {$IFDEF VectorCompression}
+    If VAR_SSE3Supported then
+      CompressionRoundSSE(@RoundConst,Addr(BlockArray[i]))
+    else
+  {$ENDIF}
+      begin
+        // step 0
+        x := RoundConst xor BlockArray[i - 89{MD6_BLOCK_LEN - step}] xor BlockArray[i - 17{MD6_TAP[0] - step}];
+        x := x xor (BlockArray[i - 18{MD6_TAP[1] - step}] and BlockArray[i - 21{MD6_TAP[2] - step}]);
+        x := x xor (BlockArray[i - 31{MD6_TAP[3] - step}] and BlockArray[i - 67{MD6_TAP[4] - step}]);
+        x := x xor (x shr 10{MD6_SHIFT_R[step]});
+        BlockArray[i] := x xor (x shl 11{MD6_SHIFT_L[step]});
 
-    // step 1
-    x := RoundConst xor BlockArray[i - 88] xor BlockArray[i - 16];
-    x := x xor (BlockArray[i - 17] and BlockArray[i - 20]);
-    x := x xor (BlockArray[i - 30] and BlockArray[i - 66]);
-    x := x xor (x shr 5);
-    BlockArray[i + 1] := x xor (x shl 24);
+        // step 1
+        x := RoundConst xor BlockArray[i - 88] xor BlockArray[i - 16];
+        x := x xor (BlockArray[i - 17] and BlockArray[i - 20]);
+        x := x xor (BlockArray[i - 30] and BlockArray[i - 66]);
+        x := x xor (x shr 5);
+        BlockArray[i + 1] := x xor (x shl 24);
 
-    // step 2
-    x := RoundConst xor BlockArray[i - 87] xor BlockArray[i - 15];
-    x := x xor (BlockArray[i - 16] and BlockArray[i - 19]);
-    x := x xor (BlockArray[i - 29] and BlockArray[i - 65]);
-    x := x xor (x shr 13);
-    BlockArray[i + 2] := x xor (x shl 9);
+        // step 2
+        x := RoundConst xor BlockArray[i - 87] xor BlockArray[i - 15];
+        x := x xor (BlockArray[i - 16] and BlockArray[i - 19]);
+        x := x xor (BlockArray[i - 29] and BlockArray[i - 65]);
+        x := x xor (x shr 13);
+        BlockArray[i + 2] := x xor (x shl 9);
 
-    // step 3
-    x := RoundConst xor BlockArray[i - 86] xor BlockArray[i - 14];
-    x := x xor (BlockArray[i - 15] and BlockArray[i - 18]);
-    x := x xor (BlockArray[i - 28] and BlockArray[i - 64]);
-    x := x xor (x shr 10);
-    BlockArray[i + 3] := x xor (x shl 16);
+        // step 3
+        x := RoundConst xor BlockArray[i - 86] xor BlockArray[i - 14];
+        x := x xor (BlockArray[i - 15] and BlockArray[i - 18]);
+        x := x xor (BlockArray[i - 28] and BlockArray[i - 64]);
+        x := x xor (x shr 10);
+        BlockArray[i + 3] := x xor (x shl 16);
 
-    // step 4
-    x := RoundConst xor BlockArray[i - 85] xor BlockArray[i - 13];
-    x := x xor (BlockArray[i - 14] and BlockArray[i - 17]);
-    x := x xor (BlockArray[i - 27] and BlockArray[i - 63]);
-    x := x xor (x shr 11);
-    BlockArray[i + 4] := x xor (x shl 15);
+        // step 4
+        x := RoundConst xor BlockArray[i - 85] xor BlockArray[i - 13];
+        x := x xor (BlockArray[i - 14] and BlockArray[i - 17]);
+        x := x xor (BlockArray[i - 27] and BlockArray[i - 63]);
+        x := x xor (x shr 11);
+        BlockArray[i + 4] := x xor (x shl 15);
 
-    // step 5
-    x := RoundConst xor BlockArray[i - 84] xor BlockArray[i - 12];
-    x := x xor (BlockArray[i - 13] and BlockArray[i - 16]);
-    x := x xor (BlockArray[i - 26] and BlockArray[i - 62]);
-    x := x xor (x shr 12);
-    BlockArray[i + 5] := x xor (x shl 9);
+        // step 5
+        x := RoundConst xor BlockArray[i - 84] xor BlockArray[i - 12];
+        x := x xor (BlockArray[i - 13] and BlockArray[i - 16]);
+        x := x xor (BlockArray[i - 26] and BlockArray[i - 62]);
+        x := x xor (x shr 12);
+        BlockArray[i + 5] := x xor (x shl 9);
 
-    // step 6
-    x := RoundConst xor BlockArray[i - 83] xor BlockArray[i - 11];
-    x := x xor (BlockArray[i - 12] and BlockArray[i - 15]);
-    x := x xor (BlockArray[i - 25] and BlockArray[i - 61]);
-    x := x xor (x shr 2);
-    BlockArray[i + 6] := x xor (x shl 27);
+        // step 6
+        x := RoundConst xor BlockArray[i - 83] xor BlockArray[i - 11];
+        x := x xor (BlockArray[i - 12] and BlockArray[i - 15]);
+        x := x xor (BlockArray[i - 25] and BlockArray[i - 61]);
+        x := x xor (x shr 2);
+        BlockArray[i + 6] := x xor (x shl 27);
 
-    // step 7
-    x := RoundConst xor BlockArray[i - 82] xor BlockArray[i - 10];
-    x := x xor (BlockArray[i - 11] and BlockArray[i - 14]);
-    x := x xor (BlockArray[i - 24] and BlockArray[i - 60]);
-    x := x xor (x shr 7);
-    BlockArray[i + 7] := x xor (x shl 15);
+        // step 7
+        x := RoundConst xor BlockArray[i - 82] xor BlockArray[i - 10];
+        x := x xor (BlockArray[i - 11] and BlockArray[i - 14]);
+        x := x xor (BlockArray[i - 24] and BlockArray[i - 60]);
+        x := x xor (x shr 7);
+        BlockArray[i + 7] := x xor (x shl 15);
 
-    // step 8
-    x := RoundConst xor BlockArray[i - 81] xor BlockArray[i - 9];
-    x := x xor (BlockArray[i - 10] and BlockArray[i - 13]);
-    x := x xor (BlockArray[i - 23] and BlockArray[i - 59]);
-    x := x xor (x shr 14);
-    BlockArray[i + 8] := x xor (x shl 6);
+        // step 8
+        x := RoundConst xor BlockArray[i - 81] xor BlockArray[i - 9];
+        x := x xor (BlockArray[i - 10] and BlockArray[i - 13]);
+        x := x xor (BlockArray[i - 23] and BlockArray[i - 59]);
+        x := x xor (x shr 14);
+        BlockArray[i + 8] := x xor (x shl 6);
 
-    // step 9
-    x := RoundConst xor BlockArray[i - 80] xor BlockArray[i - 8];
-    x := x xor (BlockArray[i - 9] and BlockArray[i - 12]);
-    x := x xor (BlockArray[i - 22] and BlockArray[i - 58]);
-    x := x xor (x shr 15);
-    BlockArray[i + 9] := x xor (x shl 2);
+        // step 9
+        x := RoundConst xor BlockArray[i - 80] xor BlockArray[i - 8];
+        x := x xor (BlockArray[i - 9] and BlockArray[i - 12]);
+        x := x xor (BlockArray[i - 22] and BlockArray[i - 58]);
+        x := x xor (x shr 15);
+        BlockArray[i + 9] := x xor (x shl 2);
 
-    // step 10
-    x := RoundConst xor BlockArray[i - 79] xor BlockArray[i - 7];
-    x := x xor (BlockArray[i - 8] and BlockArray[i - 11]);
-    x := x xor (BlockArray[i - 21] and BlockArray[i - 57]);
-    x := x xor (x shr 7);
-    BlockArray[i + 10] := x xor (x shl 29);
+        // step 10
+        x := RoundConst xor BlockArray[i - 79] xor BlockArray[i - 7];
+        x := x xor (BlockArray[i - 8] and BlockArray[i - 11]);
+        x := x xor (BlockArray[i - 21] and BlockArray[i - 57]);
+        x := x xor (x shr 7);
+        BlockArray[i + 10] := x xor (x shl 29);
 
-    // step 11
-    x := RoundConst xor BlockArray[i - 78] xor BlockArray[i - 6];
-    x := x xor (BlockArray[i - 7] and BlockArray[i - 10]);
-    x := x xor (BlockArray[i - 20] and BlockArray[i - 56]);
-    x := x xor (x shr 13);
-    BlockArray[i + 11] := x xor (x shl 8);
+        // step 11
+        x := RoundConst xor BlockArray[i - 78] xor BlockArray[i - 6];
+        x := x xor (BlockArray[i - 7] and BlockArray[i - 10]);
+        x := x xor (BlockArray[i - 20] and BlockArray[i - 56]);
+        x := x xor (x shr 13);
+        BlockArray[i + 11] := x xor (x shl 8);
 
-    // step 12
-    x := RoundConst xor BlockArray[i - 77] xor BlockArray[i - 5];
-    x := x xor (BlockArray[i - 6] and BlockArray[i - 9]);
-    x := x xor (BlockArray[i - 19] and BlockArray[i - 55]);
-    x := x xor (x shr 11);
-    BlockArray[i + 12] := x xor (x shl 15);
+        // step 12
+        x := RoundConst xor BlockArray[i - 77] xor BlockArray[i - 5];
+        x := x xor (BlockArray[i - 6] and BlockArray[i - 9]);
+        x := x xor (BlockArray[i - 19] and BlockArray[i - 55]);
+        x := x xor (x shr 11);
+        BlockArray[i + 12] := x xor (x shl 15);
 
-    // step 13
-    x := RoundConst xor BlockArray[i - 76] xor BlockArray[i - 4];
-    x := x xor (BlockArray[i - 5] and BlockArray[i - 8]);
-    x := x xor (BlockArray[i - 18] and BlockArray[i - 54]);
-    x := x xor (x shr 7);
-    BlockArray[i + 13] := x xor (x shl 5);
+        // step 13
+        x := RoundConst xor BlockArray[i - 76] xor BlockArray[i - 4];
+        x := x xor (BlockArray[i - 5] and BlockArray[i - 8]);
+        x := x xor (BlockArray[i - 18] and BlockArray[i - 54]);
+        x := x xor (x shr 7);
+        BlockArray[i + 13] := x xor (x shl 5);
 
-    // step 14
-    x := RoundConst xor BlockArray[i - 75] xor BlockArray[i - 3];
-    x := x xor (BlockArray[i - 4] and BlockArray[i - 7]);
-    x := x xor (BlockArray[i - 17] and BlockArray[i - 53]);
-    x := x xor (x shr 6);
-    BlockArray[i + 14] := x xor (x shl 31);
+        // step 14
+        x := RoundConst xor BlockArray[i - 75] xor BlockArray[i - 3];
+        x := x xor (BlockArray[i - 4] and BlockArray[i - 7]);
+        x := x xor (BlockArray[i - 17] and BlockArray[i - 53]);
+        x := x xor (x shr 6);
+        BlockArray[i + 14] := x xor (x shl 31);
 
-    // step 15
-    x := RoundConst xor BlockArray[i - 74] xor BlockArray[i - 2];
-    x := x xor (BlockArray[i - 3] and BlockArray[i - 6]);
-    x := x xor (BlockArray[i - 16] and BlockArray[i - 52]);
-    x := x xor (x shr 12);
-    BlockArray[i + 15] := x xor (x shl 9);
+        // step 15
+        x := RoundConst xor BlockArray[i - 74] xor BlockArray[i - 2];
+        x := x xor (BlockArray[i - 3] and BlockArray[i - 6]);
+        x := x xor (BlockArray[i - 16] and BlockArray[i - 52]);
+        x := x xor (x shr 12);
+        BlockArray[i + 15] := x xor (x shl 9);
+      end;
 
     // recalculate round constant
     RoundConst := ROL(RoundConst,1) xor (RoundConst and MD6_S_MASK);
@@ -2216,8 +2331,8 @@ end;
 
 //------------------------------------------------------------------------------
 {
-  Argument Sem must be "var" bevause of Linux, where it is derectly used to
-  by the calls (ie. it is not a simple "handle").
+  Argument Sem must be "var" bevause of Linux, where it is directly used by the
+  calls (ie. it is not a simple "handle").
 }
 procedure SemaphoreWait(var Sem: TMD6SemaphoreHandle);
 {$IFDEF Windows}
@@ -2521,9 +2636,9 @@ If BufferFullBlocksPop(Index) then
           {
             Pass processing to next level.
 
-            Store buffer index of the block in its auxiliary word - it will be used
-            within ThreadProcessLevel to return it to circulation (yes, that func.
-            will also release the block).
+            Store buffer index of the block in its auxiliary word - it will be
+            used within ThreadProcessLevel to return it to circulation (yes,
+            that func. will also release the block).
           }
             BlockData.BlockAuxiliary := Index;
             ThreadProcessLevel(Low(fState.Levels),Addr(BlockData),IsLast);
@@ -2629,12 +2744,12 @@ try
   fBuffer.UnprocessedCnt := 0;
   // ensure memory coherency
   ReadWriteBarrier;
-  {
-    Spawn first two threads (more may be spawned later if required - btw.
-    spawning only one is somewhat pointless).
+{
+  Spawn first two threads (more may be spawned later if required - btw.
+  spawning only one is somewhat pointless).
 
-    Note both will immediately run into locked read semaphore.
-  }
+  Note both will immediately run into locked read semaphore.
+}
   DoThreadStart;
   DoThreadStart;
 except
@@ -4641,5 +4756,27 @@ finally
   Hash.Free;
 end;
 end;
+
+
+{===============================================================================
+--------------------------------------------------------------------------------
+                               Unit initialization
+--------------------------------------------------------------------------------
+===============================================================================}
+
+procedure Initialize;
+begin
+{$IFDEF VectorCompression}
+with TSimpleCPUID.Create do
+try
+  VAR_SSE3Supported := Info.SupportedExtensions.SSE3;
+finally
+  Free;
+end;
+{$ENDIF}
+end;
+
+initialization
+  Initialize;
 
 end.
