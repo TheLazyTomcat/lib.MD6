@@ -32,7 +32,7 @@
 
   Version 2.0.1 (2025-04-09)
 
-  Last change 2025-04-09
+  Last change 2025-04-11
 
   ©2022-2025 František Milt
 
@@ -1086,7 +1086,7 @@ end;
 //------------------------------------------------------------------------------
 {$IFDEF VectorCompression}
 var
-  VAR_SSE3Supported: Boolean = False;
+  VAR_SSE2Supported: Boolean = False;
 
 procedure CompressionRoundSSE({EAX}RoundConst, {EDX}FirstWord: PInt64); register; assembler;
 const
@@ -1112,11 +1112,8 @@ asm
   registers, but my prehistoric computer does not offer those extensions, so
   I cannot develop for them.
 }
-    {$IFDEF FPC}
-      MOVDDUP   XMM4, [EAX]
-    {$ELSE}
-      DB $F2, $0F, $12, $20
-    {$ENDIF}
+      MOVQ      XMM4, [EAX]
+      MOVLHPS   XMM4, XMM4
 
       LEA       EAX, [Shifts]
       MOV       ECX, 8
@@ -1163,8 +1160,9 @@ asm
       MOVLHPS   XMM2, XMM3
       PXOR      XMM5, XMM2
     {
-      Is there any way of shifting each items in the vector register by
-      different amount?
+      Is there any way of shifting each element in the vector register by
+      different amount, other than AVX2 instructions VPSRLVQ and VPSLLVQ?
+      See above why I cannot use these.
     }
 
       MOVDQU    [EDX], XMM5
@@ -1197,7 +1195,7 @@ while i <= (Length(BlockArray) - MD6_CHUNK_LEN) do
   begin
     // unrolled round (16 steps)...
   {$IFDEF VectorCompression}
-    If VAR_SSE3Supported then
+    If VAR_SSE2Supported then
       CompressionRoundSSE(@RoundConst,Addr(BlockArray[i]))
     else
   {$ENDIF}
@@ -4769,7 +4767,7 @@ begin
 {$IFDEF VectorCompression}
 with TSimpleCPUID.Create do
 try
-  VAR_SSE3Supported := Info.SupportedExtensions.SSE3;
+  VAR_SSE2Supported := Info.SupportedExtensions.SSE2;
 finally
   Free;
 end;
