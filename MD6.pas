@@ -32,7 +32,7 @@
 
   Version 2.0.1 (2025-04-09)
 
-  Last change 2025-04-11
+  Last change 2025-04-12
 
   ©2022-2025 František Milt
 
@@ -231,6 +231,7 @@ type
     procedure ThreadStartHandler(Sender: TObject); virtual;
     procedure WaitAndFreeThreads; virtual;
     procedure ParallelProcessing(Address: Pointer; Size: TMemSize); virtual;
+    Function ParallelProgressHandler(Progress: Double): Boolean; virtual;
     // init/final
     procedure Initialize; override;
     procedure Finalize; override;
@@ -2861,7 +2862,7 @@ end;
 --------------------------------------------------------------------------------
 ===============================================================================}
 type
-  TMD6ProgressHandler = procedure(Progess: Double) of object;
+  TMD6ProgressHandler = Function(Progess: Double): Boolean of object;
 
 {===============================================================================
     TMD6ProcessorParallel - class declaration
@@ -2884,7 +2885,7 @@ type
     procedure ThreadReleaseBlock(Level: Integer; Block: PMD6MTProcessedBlock); override;
     procedure ThreadProcessing; virtual;
     procedure ThreadExecute; override;
-    procedure ReportProgress(Progress: Double); virtual;
+    Function ReportProgress(Progress: Double): Boolean; virtual;
   public
     procedure ProcessUpdate(const Chunk); override;
     procedure ProcessLast(ChunkPadBytes: TMemSize); override;
@@ -2920,7 +2921,7 @@ var
 
 begin
 InitializeBlockArray(Block.BlockArray,Block.BlockChunks);
-while True do
+while InterlockedLoad(fProcessing.Status) = MD6_MT_STATUS_RUNNING do
   begin
     Block.BlockIndex := InterlockedExchangeAdd(fParallelState.BlockIndex,1);
     If Block.BlockIndex < fParallelState.LastBlock.BlockIndex then
@@ -2975,10 +2976,12 @@ end;
 
 //------------------------------------------------------------------------------
 
-procedure TMD6ProcessorParallel.ReportProgress(Progress: Double);
+Function TMD6ProcessorParallel.ReportProgress(Progress: Double): Boolean;
 begin
 If Assigned(fProgressHandler) then
-  fProgressHandler(Progress);
+  Result := fProgressHandler(Progress)
+else
+  Result := False;
 end;
 
 {-------------------------------------------------------------------------------
@@ -3029,22 +3032,24 @@ try
   For i := 1 to fMaxThreads do
     DoThreadStart;
   // now wait until it all finishes (or crashes)
-  while True do
+  while InterlockedLoad(fProcessing.Status) = MD6_MT_STATUS_RUNNING do
     begin
       WaitResult := fProcessing.EndingEvent.WaitFor(100{ms});
       case WaitResult of
         wrSignaled: Break;                  // processing is done, exit cycle
         wrTimeout:  with fParallelState do  // report progress and continue the cycle
-                      ReportProgress(Succ(InterlockedLoad(BlockIndex)) / Succ(LastBlock.BlockIndex));
+                      If ReportProgress(Succ(InterlockedLoad(BlockIndex)) / Succ(LastBlock.BlockIndex)) then 
+                        Break{while...};
       else
         raise EMD6ProcessingError.CreateFmt('TMD6ProcessorParallel.ProcessParallel: Waiting failed (%d).',[Ord(WaitResult)]);
       end;
     end;
   If InterlockedLoad(fProcessing.Status) = MD6_MT_STATUS_RUNNING then
-    ProcessEnd
-  else
-    ProcessEnding;
-  ReportProgress(1.0);  
+    begin
+      ProcessEnd;
+      ReportProgress(1.0);
+    end
+  else ProcessEnding;
 except
   ProcessTerminate;
   raise
@@ -3280,7 +3285,7 @@ try
   Processor.ModeControl := fModeControl;
   Processor.MaxThreads := fMaxThreads;
   Processor.OnThreadStart := ThreadStartHandler;
-  Processor.ProgressHandler := DoProgress;
+  Processor.ProgressHandler := ParallelProgressHandler;
   // do not call ProcessInit, it is called automatically
   Processor.ProcessParallel(Address,Size);
   fMD6 := Processor.MD6;
@@ -3288,6 +3293,14 @@ finally
   fProcessor := nil;
   Processor.Free;
 end;
+end;
+
+//------------------------------------------------------------------------------
+
+Function TMD6Hash.ParallelProgressHandler(Progress: Double): Boolean;
+begin
+DoProgress(Progress);
+Result := fBreakProcessing;
 end;
 
 //------------------------------------------------------------------------------
